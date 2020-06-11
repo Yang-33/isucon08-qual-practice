@@ -44,21 +44,12 @@ bind-address		= 127.0.0.1
 #
 # * Fine Tuning
 #
-key_buffer_size		= 16M
-max_allowed_packet	= 16M
 thread_stack		= 192K
-thread_cache_size       = 8
 # This replaces the startup script and checks MyISAM tables if needed
 # the first time they are touched
 myisam-recover-options  = BACKUP
-max_connections        = 110
 #table_open_cache       = 64
 #thread_concurrency     = 10
-#
-# * Query Cache Configuration
-#
-query_cache_limit	= 1M
-query_cache_size        = 16M
 #
 # * Logging and Replication
 #
@@ -73,11 +64,13 @@ query_cache_size        = 16M
 log_error = /var/log/mysql/error.log
 #
 # Here you can see queries with especially long duration
-slow_query_log		= 1
-slow_query_log_file	= /var/log/mysql/mysql-slow332.log
-long_query_time = 0
-#log-queries-not-using-indexes
-#
+
+# ! ログ関連
+slow_query_log		= 1 # !
+slow_query_log_file	= /var/log/mysql/mysql-slow.log # !
+long_query_time = 0 # !
+log-queries-not-using-indexes = 1 # インデックスを使っていないログがでてくる
+
 # The following can be used as easy to replay backup logs or for replication.
 # note: if you are setting up a replication slave, see README.Debian about
 #       other settings you may need to change.
@@ -92,14 +85,32 @@ max_binlog_size   = 100M
 #
 # InnoDB is enabled by default with a 10MB datafile in /var/lib/mysql/.
 # Read the manual for more InnoDB related options. There are many!
-#
-# * Security Features
-#
-# Read the manual, too, if you want chroot!
-# chroot = /var/lib/mysql/
-#
-# For generating SSL certificates I recommend the OpenSSL GUI "tinyca".
-#
-# ssl-ca=/etc/mysql/cacert.pem
-# ssl-cert=/etc/mysql/server-cert.pem
-# ssl-key=/etc/mysql/server-key.pem
+
+# ! INNODB グローバルバッファ InnoDB編
+innodb_buffer_pool_size=1G # 75%が目安
+#innodb_additional_mem_pool_size = 20M # 設定できないので後で調べる
+
+innodb_flush_method=O_DIRECT # OSのファイルシステムとのダブルキャッシュを避けるため
+innodb_log_file_size = 512M # デフォルトは48MB、使いまわす固定領域のサイズ
+innodb_flush_log_at_trx_commit=2 # ログ書き込みのタイミングを制御 0か2だとパフォーマンスがあがる　危険コマンドである
+
+# グローバルバッファ MyISAM編
+key_buffer_size = 64M
+
+# スレッドバッファ
+join_buffer_size = 256K
+max_allowed_packet = 8M
+read_buffer_size = 256K
+read_rnd_buffer_size = 2M
+sort_buffer_size = 4M
+
+# クエリキャッシュ
+query_cache_limit = 16M
+query_cache_size = 512M #グローバルバッファ
+query_cache_type = 1
+ 
+# その他
+max_connections = 1024
+thread_cache_size = 300 # max_connections / 3
+max_heap_table_size = 16M
+tmp_table_size = 16M #スレッドバッファ
