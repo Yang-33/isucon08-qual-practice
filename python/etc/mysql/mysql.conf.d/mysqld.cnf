@@ -79,7 +79,7 @@ max_binlog_size   = 100M
 # ! ログ関連
 slow_query_log		= 1 # !
 slow_query_log_file	= /var/log/mysql/mysql-slow.log # !
-long_query_time = 0.1 # query_time > |long_query_time| ならログに乗る　最初は大きい値にすると絞り込みやすい
+long_query_time = 0 # query_time > |long_query_time| ならログに乗る　最初は大きい値にすると絞り込みやすい
 log-queries-not-using-indexes = 1 # インデックスを使っていないログがでてくる
 
 # ! INNODB グローバルバッファ InnoDB編

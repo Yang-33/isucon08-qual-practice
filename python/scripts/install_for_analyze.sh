@@ -4,3 +4,8 @@
 wget https://github.com/percona/percona-toolkit/archive/3.0.5-test.tar.gz
 tar zxvf 3.0.5-test.tar.gz
 ./percona-toolkit-3.0.5-test/bin/pt-query-digest --version
+
+
+# for kataribe
+go get -u github.com/matsuu/kataribe
+kataribe -generate

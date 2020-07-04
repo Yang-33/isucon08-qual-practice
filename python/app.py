@@ -9,6 +9,7 @@ import subprocess
 from io import StringIO
 import csv
 from datetime import datetime, timezone
+from scripts.debugvar import DEBUG
 
 
 base_path = pathlib.Path(__file__).resolve().parent.parent
@@ -28,7 +29,8 @@ class CustomFlask(flask.Flask):
     ))
 
 
-app = CustomFlask(__name__, static_folder=str(static_folder), static_url_path='')
+app = CustomFlask(__name__, static_folder=str(
+    static_folder), static_url_path='')
 app.config['SECRET_KEY'] = 'tagomoris'
 
 
@@ -104,9 +106,11 @@ def get_events(filter=lambda e: True):
         rows = cur.fetchall()
         event_ids = [row['id'] for row in rows if filter(row)]
         events = []
+        # N+1になっている
         for event_id in event_ids:
-            event = get_event(event_id)
+            event = get_event(event_id, need_detail=False)
             for sheet in event['sheets'].values():
+                # 頑張って作ったのに捨てられている
                 del sheet['detail']
             events.append(event)
         conn.commit()
@@ -116,44 +120,76 @@ def get_events(filter=lambda e: True):
     return events
 
 
-def get_event(event_id, login_user_id=None):
+def get_event(event_id, login_user_id=None, need_detail=True):
     cur = dbh().cursor()
     cur.execute("SELECT * FROM events WHERE id = %s", [event_id])
     event = cur.fetchone()
-    if not event: return None
+    if not event:
+        return None
 
     event["total"] = 0
     event["remains"] = 0
     event["sheets"] = {}
-    for rank in ["S", "A", "B", "C"]:
-        event["sheets"][rank] = {'total': 0, 'remains': 0, 'detail': []}
+    ranks = ["S", "A", "B", "C"]
 
-    cur.execute("SELECT * FROM sheets ORDER BY `rank`, num")
-    sheets = cur.fetchall()
-    for sheet in sheets:
-        if not event['sheets'][sheet['rank']].get('price'):
-            event['sheets'][sheet['rank']]['price'] = event['price'] + sheet['price']
-        event['total'] += 1
-        event['sheets'][sheet['rank']]['total'] += 1
+    if need_detail:
+        for rank in ranks:
+            event["sheets"][rank] = {'total': 0, 'remains': 0, 'detail': []}
 
+        cur.execute("SELECT * FROM sheets ORDER BY `rank`, num")
+        sheets = cur.fetchall()
+        for sheet in sheets:  # 全席についての情報を処理していく
+            if not event['sheets'][sheet['rank']].get('price'):
+                event['sheets'][sheet['rank']]['price'] = event['price'] + \
+                    sheet['price']  # event(sheet, S, price) = movie + seat price
+            event['total'] += 1  # 席数++
+            event['sheets'][sheet['rank']]['total'] += 1  # rank 席数++
+
+            # N+1の更にネストされたもの
+            # 予約情報から、
+            cur.execute(
+                "SELECT * FROM reservations \
+                WHERE event_id = %s AND sheet_id = %s AND canceled_at IS NULL \
+                GROUP BY event_id, sheet_id HAVING reserved_at = MIN(reserved_at)",
+                [event['id'], sheet['id']])
+            reservation = cur.fetchone()
+            if reservation:
+                if login_user_id and reservation['user_id'] == login_user_id:
+                    sheet['mine'] = True
+                sheet['reserved'] = True
+                sheet['reserved_at'] = int(
+                    reservation['reserved_at'].replace(tzinfo=timezone.utc).timestamp())
+            else:  # OK
+                event['remains'] += 1  # 残り席数++
+                event['sheets'][sheet['rank']]['remains'] += 1  # rank 残り席数++
+
+            event['sheets'][sheet['rank']]['detail'].append(sheet)
+
+            del sheet['id']
+            del sheet['price']
+            del sheet['rank']
+    else:  # detailが必要ではない場合
+        sheet_prices = {'S': 5000, 'A': 3000, 'B': 1000, 'C': 0}
+        sheet_totals = {'S': 50, 'A': 150, 'B': 300, 'C': 500}
+        for rank in ranks:
+            event["sheets"][rank] = {'total': 0, 'remains': 0, 'detail': [],
+                                     'price': event['price'] + sheet_prices[rank]}
+            event["sheets"][rank]['total'] = sheet_totals[rank]
+            event["sheets"][rank]['remains'] = sheet_totals[rank]
+
+        # reservation から予約済みのものをランク別に集計して、|remains|から引く
         cur.execute(
-            "SELECT * FROM reservations WHERE event_id = %s AND sheet_id = %s AND canceled_at IS NULL GROUP BY event_id, sheet_id HAVING reserved_at = MIN(reserved_at)",
-            [event['id'], sheet['id']])
-        reservation = cur.fetchone()
-        if reservation:
-            if login_user_id and reservation['user_id'] == login_user_id:
-                sheet['mine'] = True
-            sheet['reserved'] = True
-            sheet['reserved_at'] = int(reservation['reserved_at'].replace(tzinfo=timezone.utc).timestamp())
-        else:
-            event['remains'] += 1
-            event['sheets'][sheet['rank']]['remains'] += 1
+            'SELECT sheets.`rank`, COUNT(*) AS reserved \
+            FROM reservations INNER JOIN sheets ON reservations.sheet_id = sheets.id \
+            WHERE event_id = %s AND canceled_at IS NULL \
+            GROUP BY sheets.`rank`', [event['id']])
+        reserved = cur.fetchall()
+        for rank in reserved:
+            event['sheets'][rank['rank']]['remains'] -= rank['reserved']
 
-        event['sheets'][sheet['rank']]['detail'].append(sheet)
-
-        del sheet['id']
-        del sheet['price']
-        del sheet['rank']
+        for rank in ranks:
+            event["total"] += event["sheets"][rank]['total']
+            event["remains"] += event["sheets"][rank]['remains']
 
     event['public'] = True if event['public_fg'] else False
     event['closed'] = True if event['closed_fg'] else False
@@ -184,13 +220,15 @@ def get_login_administrator():
         return None
     cur = dbh().cursor()
     administrator_id = flask.session['administrator_id']
-    cur.execute("SELECT id, nickname FROM administrators WHERE id = %s", [administrator_id])
+    cur.execute("SELECT id, nickname FROM administrators WHERE id = %s", [
+                administrator_id])
     return cur.fetchone()
 
 
 def validate_rank(rank):
     cur = dbh().cursor()
-    cur.execute("SELECT COUNT(*) AS total_sheets FROM sheets WHERE `rank` = %s", [rank])
+    cur.execute(
+        "SELECT COUNT(*) AS total_sheets FROM sheets WHERE `rank` = %s", [rank])
     ret = cur.fetchone()
     return int(ret['total_sheets']) > 0
 
@@ -198,7 +236,8 @@ def validate_rank(rank):
 def render_report_csv(reports):
     reports = sorted(reports, key=lambda x: x['sold_at'])
 
-    keys = ["reservation_id", "event_id", "rank", "num", "price", "user_id", "sold_at", "canceled_at"]
+    keys = ["reservation_id", "event_id", "rank", "num",
+            "price", "user_id", "sold_at", "canceled_at"]
 
     body = []
     body.append(keys)
@@ -278,7 +317,8 @@ def get_users(user_id):
         del event['remains']
 
         if row['canceled_at']:
-            canceled_at = int(row['canceled_at'].replace(tzinfo=timezone.utc).timestamp())
+            canceled_at = int(row['canceled_at'].replace(
+                tzinfo=timezone.utc).timestamp())
         else:
             canceled_at = None
 
@@ -314,6 +354,7 @@ def get_users(user_id):
     return jsonify(user)
 
 
+# TODO: 重いが対処できない。過去の資料から解決策を探してみる
 @app.route('/api/actions/login', methods=['POST'])
 def post_login():
     login_name = flask.request.json['login_name']
@@ -351,8 +392,10 @@ def get_events_api():
 @app.route('/api/events/<int:event_id>')
 def get_events_by_id(event_id):
     user = get_login_user()
-    if user: event = get_event(event_id, user['id'])
-    else: event = get_event(event_id)
+    if user:
+        event = get_event(event_id, user['id'])
+    else:
+        event = get_event(event_id)
 
     if not event or not event["public"]:
         return res_error("not_found", 404)
@@ -378,7 +421,7 @@ def post_reserve(event_id):
     reservation_id = 0
 
     while True:
-        conn =  dbh()
+        conn = dbh()
         cur = conn.cursor()
         cur.execute(
             "SELECT * FROM sheets WHERE id NOT IN (SELECT sheet_id FROM reservations WHERE event_id = %s AND canceled_at IS NULL FOR UPDATE) AND `rank` =%s ORDER BY RAND() LIMIT 1",
@@ -418,7 +461,8 @@ def delete_reserve(event_id, rank, num):
         return res_error("invalid_rank", 404)
 
     cur = dbh().cursor()
-    cur.execute('SELECT * FROM sheets WHERE `rank` = %s AND num = %s', [rank, num])
+    cur.execute(
+        'SELECT * FROM sheets WHERE `rank` = %s AND num = %s', [rank, num])
     sheet = cur.fetchone()
     if not sheet:
         return res_error("invalid_sheet", 404)
@@ -455,8 +499,10 @@ def delete_reserve(event_id, rank, num):
 @app.route('/admin/')
 def get_admin():
     administrator = get_login_administrator()
-    if administrator: events=get_events()
-    else: events={}
+    if administrator:
+        events = get_events()
+    else:
+        events = {}
     return flask.render_template('admin.html', administrator=administrator, events=events, base_url=make_base_url(flask.request))
 
 
@@ -467,7 +513,8 @@ def post_adin_login():
 
     cur = dbh().cursor()
 
-    cur.execute('SELECT * FROM administrators WHERE login_name = %s', [login_name])
+    cur.execute(
+        'SELECT * FROM administrators WHERE login_name = %s', [login_name])
     administrator = cur.fetchone()
     cur.execute('SELECT SHA2(%s, 256) AS pass_hash', [password])
     pass_hash = cur.fetchone()
@@ -527,9 +574,12 @@ def get_admin_events_by_id(event_id):
 @app.route('/admin/api/events/<int:event_id>/actions/edit', methods=['POST'])
 @admin_login_required
 def post_event_edit(event_id):
-    public = flask.request.json['public'] if 'public' in flask.request.json.keys() else False
-    closed = flask.request.json['closed'] if 'closed' in flask.request.json.keys() else False
-    if closed: public = False
+    public = flask.request.json['public'] if 'public' in flask.request.json.keys(
+    ) else False
+    closed = flask.request.json['closed'] if 'closed' in flask.request.json.keys(
+    ) else False
+    if closed:
+        public = False
 
     event = get_event(event_id)
     if not event:
@@ -568,7 +618,8 @@ def get_admin_event_sales(event_id):
     for reservation in reservations:
         if reservation['canceled_at']:
             canceled_at = reservation['canceled_at'].isoformat()+"Z"
-        else: canceled_at = ''
+        else:
+            canceled_at = ''
         reports.append({
             "reservation_id": reservation['id'],
             "event_id":       event['id'],
@@ -594,7 +645,8 @@ def get_admin_sales():
     for reservation in reservations:
         if reservation['canceled_at']:
             canceled_at = reservation['canceled_at'].isoformat()+"Z"
-        else: canceled_at = ''
+        else:
+            canceled_at = ''
         reports.append({
             "reservation_id": reservation['id'],
             "event_id":       reservation['event_id'],
