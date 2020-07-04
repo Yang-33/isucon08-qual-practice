@@ -345,7 +345,7 @@ def get_users(user_id):
     rows = cur.fetchall()
     recent_events = []
     for row in rows:
-        event = get_event(row['event_id'])
+        event = get_event(row['event_id'],need_detail=False)
         for sheet in event['sheets'].values():
             del sheet['detail']
         recent_events.append(event)

@@ -62,6 +62,34 @@ name = "stylesheets"
 regexp = '^(GET|HEAD) /images/'
 name = "images"
 
+[[bundle]]
+regexp = '^GET /api/users/\d+'
+name = "GET /api/users/*"
+
+[[bundle]]
+regexp = '^GET /admin/api/reports/events/\d+/sales'
+name = "GET /admin/api/reports/events/*/sales"
+
+[[bundle]]
+regexp = '^DELETE /api/events/\d+/sheets/[SABCD]/\d+/reservation'
+name = "DELETE /api/events/*/sheets/*/*/reservation"
+
+[[bundle]]
+regexp = '^POST /api/events/\d+/actions/reserve'
+name = "POST /api/events/*/actions/reserve"
+
+[[bundle]]
+regexp = '^GET /api/events/\d+'
+name = "GET /api/events/*"
+
+[[bundle]]
+regexp = '^GET /admin/api/events/\d+'
+name = "GET /admin/api/events/*"
+
+[[bundle]]
+regexp = '^POST /admin/api/events/\d+/actions/edit'
+name = "POST /admin/api/events/*/actions/edit"
+
 # You can replace the part of urls which matched to your regular expressions.
 # For overview of regexp syntax: https://golang.org/pkg/regexp/syntax/
 #[[replace]]
