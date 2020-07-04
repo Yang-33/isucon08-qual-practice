@@ -120,6 +120,20 @@ def get_events(filter=lambda e: True):
     return events
 
 
+def create_sheets():
+    a = [0 for i in range(1001)]
+    sheet_totals = {'S': 50, 'A': 150, 'B': 300, 'C': 500}
+    sheet_prices = {'S': 5000, 'A': 3000, 'B': 1000, 'C': 0}
+    id = 0
+    for rank in "SABC":
+        total_by_rank = sheet_totals[rank]
+        for i in range(1, total_by_rank + 1):
+            a[i+id] = {"id": i+id, "rank": rank,
+                       'num': i, 'price': sheet_prices[rank]}
+        id += total_by_rank
+    return a
+
+
 def get_event(event_id, login_user_id=None, need_detail=True):
     cur = dbh().cursor()
     cur.execute("SELECT * FROM events WHERE id = %s", [event_id])
@@ -132,52 +146,58 @@ def get_event(event_id, login_user_id=None, need_detail=True):
     event["sheets"] = {}
     ranks = ["S", "A", "B", "C"]
 
+    sheet_prices = {'S': 5000, 'A': 3000, 'B': 1000, 'C': 0}
+    sheet_totals = {'S': 50, 'A': 150, 'B': 300, 'C': 500}
+    for rank in ranks:
+        event["sheets"][rank] = {'total': 0, 'remains': 0, 'detail': [],
+                                 'price': event['price'] + sheet_prices[rank]}
+        event["sheets"][rank]['total'] = sheet_totals[rank]
+        event["sheets"][rank]['remains'] = sheet_totals[rank]
+
     if need_detail:
-        for rank in ranks:
-            event["sheets"][rank] = {'total': 0, 'remains': 0, 'detail': []}
 
-        cur.execute("SELECT * FROM sheets ORDER BY `rank`, num")
-        sheets = cur.fetchall()
-        for sheet in sheets:  # 全席についての情報を処理していく
-            if not event['sheets'][sheet['rank']].get('price'):
-                event['sheets'][sheet['rank']]['price'] = event['price'] + \
-                    sheet['price']  # event(sheet, S, price) = movie + seat price
-            event['total'] += 1  # 席数++
-            event['sheets'][sheet['rank']]['total'] += 1  # rank 席数++
+        # reservations.sheet_id をわたすと、rankと席の番号の組がかえってくるやつがあればOK
+        sheets = create_sheets()
+        cur.execute(
+            "SELECT * FROM reservations where event_id = %s AND canceled_at IS NULL", [event_id])
 
-            # N+1の更にネストされたもの
-            # 予約情報から、
-            cur.execute(
-                "SELECT * FROM reservations \
-                WHERE event_id = %s AND sheet_id = %s AND canceled_at IS NULL \
-                GROUP BY event_id, sheet_id HAVING reserved_at = MIN(reserved_at)",
-                [event['id'], sheet['id']])
-            reservation = cur.fetchone()
+        
+        # 次に、予約済みの情報を得る
+        # sheetが特定されるので、その情報をupdateする
+        # そうでないsheetたちは、印をつけてないものだけをappend
+        checked = set()
+        reservations = cur.fetchall()
+        for reservation in reservations:
+            # 各rankの情報だけupdateすればよい
+            sheet = sheets[reservation["sheet_id"]]
+            event['sheets'][sheet['rank']]['remains'] -= 1  # rank 席数--
+
+            # 各シートに対して詳細な予約情報をとってくる
             if reservation:
                 if login_user_id and reservation['user_id'] == login_user_id:
                     sheet['mine'] = True
                 sheet['reserved'] = True
                 sheet['reserved_at'] = int(
                     reservation['reserved_at'].replace(tzinfo=timezone.utc).timestamp())
-            else:  # OK
-                event['remains'] += 1  # 残り席数++
-                event['sheets'][sheet['rank']]['remains'] += 1  # rank 残り席数++
 
             event['sheets'][sheet['rank']]['detail'].append(sheet)
+            checked.add(sheet["id"])
 
+        # 1番から空席のdetailを追加
+        for sheet in sheets[1:]:
+            if sheet["id"] in checked:
+                continue
+            event['sheets'][sheet['rank']]['detail'].append(sheet)
             del sheet['id']
             del sheet['price']
             del sheet['rank']
-    else:  # detailが必要ではない場合
-        sheet_prices = {'S': 5000, 'A': 3000, 'B': 1000, 'C': 0}
-        sheet_totals = {'S': 50, 'A': 150, 'B': 300, 'C': 500}
+        # こいつの順番はrank, numで並べる
         for rank in ranks:
-            event["sheets"][rank] = {'total': 0, 'remains': 0, 'detail': [],
-                                     'price': event['price'] + sheet_prices[rank]}
-            event["sheets"][rank]['total'] = sheet_totals[rank]
-            event["sheets"][rank]['remains'] = sheet_totals[rank]
+            sorted(event['sheets'][rank]['detail'], key = lambda x: x["num"])
+    else:  # detailが必要ではない場合
 
         # reservation から予約済みのものをランク別に集計して、|remains|から引く
+        # ランクがほしいので、sheetsとJOINする必要がある
         cur.execute(
             'SELECT sheets.`rank`, COUNT(*) AS reserved \
             FROM reservations INNER JOIN sheets ON reservations.sheet_id = sheets.id \
@@ -187,9 +207,10 @@ def get_event(event_id, login_user_id=None, need_detail=True):
         for rank in reserved:
             event['sheets'][rank['rank']]['remains'] -= rank['reserved']
 
-        for rank in ranks:
-            event["total"] += event["sheets"][rank]['total']
-            event["remains"] += event["sheets"][rank]['remains']
+    # それぞれのrankについて集計
+    for rank in ranks:
+        event["total"] += event["sheets"][rank]['total']
+        event["remains"] += event["sheets"][rank]['remains']
 
     event['public'] = True if event['public_fg'] else False
     event['closed'] = True if event['closed_fg'] else False
@@ -345,7 +366,7 @@ def get_users(user_id):
     rows = cur.fetchall()
     recent_events = []
     for row in rows:
-        event = get_event(row['event_id'],need_detail=False)
+        event = get_event(row['event_id'], need_detail=False)
         for sheet in event['sheets'].values():
             del sheet['detail']
         recent_events.append(event)
@@ -473,7 +494,7 @@ def delete_reserve(event_id, rank, num):
         cur = conn.cursor()
 
         cur.execute(
-            "SELECT * FROM reservations WHERE event_id = %s AND sheet_id = %s AND canceled_at IS NULL GROUP BY event_id HAVING reserved_at = MIN(reserved_at) FOR UPDATE",
+            "SELECT * FROM reservations WHERE event_id = %s AND sheet_id = %s AND canceled_at IS NULL GROUP BY event_id FOR UPDATE",
             [event['id'], sheet['id']])
         reservation = cur.fetchone()
 
