@@ -90,6 +90,10 @@ name = "GET /admin/api/events/*"
 regexp = '^POST /admin/api/events/\d+/actions/edit'
 name = "POST /admin/api/events/*/actions/edit"
 
+[[bundle]]
+regexp = '^GET /(css|js|favicon).+'
+name = "css & js"
+
 # You can replace the part of urls which matched to your regular expressions.
 # For overview of regexp syntax: https://golang.org/pkg/regexp/syntax/
 #[[replace]]
