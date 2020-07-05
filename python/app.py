@@ -134,7 +134,7 @@ def create_sheets():
     return a
 
 
-def get_event(event_id, login_user_id=None, need_detail=True):
+def get_event(event_id, login_user_id=None, need_detail=True, need_only_id_public=False):
     cur = dbh().cursor()
     cur.execute("SELECT * FROM events WHERE id = %s", [event_id])
     event = cur.fetchone()
@@ -144,6 +144,13 @@ def get_event(event_id, login_user_id=None, need_detail=True):
     event["total"] = 0
     event["remains"] = 0
     event["sheets"] = {}
+    event['public'] = True if event['public_fg'] else False
+    event['closed'] = True if event['closed_fg'] else False
+    del event['public_fg']
+    del event['closed_fg']
+    if need_only_id_public:
+        return event
+
     ranks = ["S", "A", "B", "C"]
 
     sheet_prices = {'S': 5000, 'A': 3000, 'B': 1000, 'C': 0}
@@ -161,7 +168,6 @@ def get_event(event_id, login_user_id=None, need_detail=True):
         cur.execute(
             "SELECT * FROM reservations where event_id = %s AND canceled_at IS NULL", [event_id])
 
-        
         # 次に、予約済みの情報を得る
         # sheetが特定されるので、その情報をupdateする
         # そうでないsheetたちは、印をつけてないものだけをappend
@@ -185,19 +191,23 @@ def get_event(event_id, login_user_id=None, need_detail=True):
 
         # 1番から空席のdetailを追加
         for sheet in sheets[1:]:
-            if sheet["id"] in checked:
-                continue
-            event['sheets'][sheet['rank']]['detail'].append(sheet)
+            id = sheet["id"]
+            rank = sheet['rank']
             del sheet['id']
             del sheet['price']
             del sheet['rank']
+            if id in checked:
+                continue
+            event['sheets'][rank]['detail'].append(sheet)
         # こいつの順番はrank, numで並べる
         for rank in ranks:
-            sorted(event['sheets'][rank]['detail'], key = lambda x: x["num"])
+            event['sheets'][rank]['detail'].sort(key=lambda x: x["num"])
     else:  # detailが必要ではない場合
 
         # reservation から予約済みのものをランク別に集計して、|remains|から引く
         # ランクがほしいので、sheetsとJOINする必要がある
+
+        # 結構重い…
         cur.execute(
             'SELECT sheets.`rank`, COUNT(*) AS reserved \
             FROM reservations INNER JOIN sheets ON reservations.sheet_id = sheets.id \
@@ -212,10 +222,6 @@ def get_event(event_id, login_user_id=None, need_detail=True):
         event["total"] += event["sheets"][rank]['total']
         event["remains"] += event["sheets"][rank]['remains']
 
-    event['public'] = True if event['public_fg'] else False
-    event['closed'] = True if event['closed_fg'] else False
-    del event['public_fg']
-    del event['closed_fg']
     return event
 
 
@@ -431,7 +437,7 @@ def post_reserve(event_id):
     rank = flask.request.json["sheet_rank"]
 
     user = get_login_user()
-    event = get_event(event_id, user['id'])
+    event = get_event(event_id, user['id'], need_only_id_public=True)
 
     if not event or not event['public']:
         return res_error("invalid_event", 404)
@@ -474,7 +480,7 @@ def post_reserve(event_id):
 @login_required
 def delete_reserve(event_id, rank, num):
     user = get_login_user()
-    event = get_event(event_id, user['id'])
+    event = get_event(event_id, user['id'], need_only_id_public=True)
 
     if not event or not event['public']:
         return res_error("invalid_event", 404)
@@ -602,7 +608,7 @@ def post_event_edit(event_id):
     if closed:
         public = False
 
-    event = get_event(event_id)
+    event = get_event(event_id, need_only_id_public=True)
     if not event:
         return res_error("not_found", 404)
 
@@ -627,7 +633,7 @@ def post_event_edit(event_id):
 @app.route('/admin/api/reports/events/<int:event_id>/sales')
 @admin_login_required
 def get_admin_event_sales(event_id):
-    event = get_event(event_id)
+    event = get_event(event_id, need_only_id_public=True)
 
     cur = dbh().cursor()
     reservations = cur.execute(
