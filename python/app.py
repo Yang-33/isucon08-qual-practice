@@ -322,6 +322,14 @@ def get_initialize():
                 [event_id, rank, reserved.get(rank, 0)])
 
     # create index
+    cur.execute('''
+    ALTER TABLE reservations ADD INDEX event_canceled(event_id, canceled_at)
+    ''')
+
+    cur.execute('''
+    ALTER TABLE reservations ADD INDEX user_id_for_five(user_id)
+    ''')
+
     return ('', 204)
 
 
@@ -395,8 +403,15 @@ def get_users(user_id):
     row = cur.fetchone()
     user['total_price'] = int(row['total_price'])
 
-    cur.execute(
-        "SELECT event_id FROM reservations WHERE user_id = %s GROUP BY event_id ORDER BY MAX(IFNULL(canceled_at, reserved_at)) DESC LIMIT 5",
+    # 遅い
+    # ユーザーの最近の予約を5件もってくる
+    cur.execute('''
+        SELECT event_id FROM reservations
+        WHERE user_id = %s
+        GROUP BY event_id
+        ORDER BY MAX(IFNULL(canceled_at, reserved_at)) DESC
+        LIMIT 5
+        ''',
         [user['id']])
     rows = cur.fetchall()
     recent_events = []
@@ -480,9 +495,16 @@ def post_reserve(event_id):
     while True:
         conn = dbh()
         cur = conn.cursor()
-        cur.execute(
-            "SELECT * FROM sheets WHERE id NOT IN (SELECT sheet_id FROM reservations WHERE event_id = %s AND canceled_at IS NULL FOR UPDATE) AND `rank` =%s ORDER BY RAND() LIMIT 1",
-            [event['id'], rank])
+        # 予約されていないもののうち、ランダムに1件取得
+        cur.execute('''
+            SELECT * FROM sheets
+            WHERE id NOT IN (
+                SELECT sheet_id FROM reservations
+                WHERE event_id = %s AND canceled_at IS NULL FOR UPDATE
+                )
+                AND `rank` = %s
+                ORDER BY RAND() LIMIT 1
+            ''',[event['id'], rank])
         sheet = cur.fetchone()
         if not sheet:
             return res_error("sold_out", 409)
