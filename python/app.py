@@ -204,15 +204,9 @@ def get_event(event_id, login_user_id=None, need_detail=True, need_only_id_publi
             event['sheets'][rank]['detail'].sort(key=lambda x: x["num"])
     else:  # detailが必要ではない場合
 
-        # reservation から予約済みのものをランク別に集計して、|remains|から引く
-        # ランクがほしいので、sheetsとJOINする必要がある
-
-        # 結構重い…
-        cur.execute(
-            'SELECT sheets.`rank`, COUNT(*) AS reserved \
-            FROM reservations INNER JOIN sheets ON reservations.sheet_id = sheets.id \
-            WHERE event_id = %s AND canceled_at IS NULL \
-            GROUP BY sheets.`rank`', [event['id']])
+        cur.execute('''
+        SELECT `rank`, reserved FROM sheet_reserved WHERE event_id = %s
+        ''', [event_id])
         reserved = cur.fetchall()
         for rank in reserved:
             event['sheets'][rank['rank']]['remains'] -= rank['reserved']
@@ -290,9 +284,44 @@ def get_index():
     return flask.render_template('index.html', user=user, events=events, base_url=make_base_url(flask.request))
 
 
+# !
 @app.route('/initialize')
 def get_initialize():
+    # 完全初期化される
     subprocess.call(["../../db/init.sh"])
+
+    # create summary table by 'rank, reserved'
+    conn = dbh()
+    cur = conn.cursor()
+    cur.execute('''
+    CREATE TABLE IF NOT EXISTS sheet_reserved (
+        id          INTEGER UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+        event_id    INTEGER UNSIGNED NOT NULL,
+        `rank`      VARCHAR(128)     NOT NULL,
+        reserved    INTEGER UNSIGNED NOT NULL,
+        UNIQUE KEY event_id_rank_uniq (event_id, `rank`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ''')
+
+    cur.execute('SELECT id FROM events')
+    events = cur.fetchall()
+    for event in events:
+        reserved = {}
+        event_id = event['id']
+        cur.execute('SELECT sheets.`rank`, COUNT(*) AS reserved \
+                    FROM reservations INNER JOIN sheets ON reservations.sheet_id = sheets.id \
+                    WHERE event_id = %s AND canceled_at IS NULL \
+                    GROUP BY sheets.`rank`', [event_id])
+        rs = cur.fetchall()
+        for r in rs:
+            reserved[r['rank']] = r['reserved']
+        for rank in "SABC":
+            # ないときは0
+            cur.execute(
+                'INSERT INTO sheet_reserved (event_id, `rank`, reserved) VALUES (%s, %s, %s)',
+                [event_id, rank, reserved.get(rank, 0)])
+
+    # create index
     return ('', 204)
 
 
@@ -431,6 +460,7 @@ def get_events_by_id(event_id):
     return jsonify(event)
 
 
+# !
 @app.route('/api/events/<int:event_id>/actions/reserve', methods=['POST'])
 @login_required
 def post_reserve(event_id):
@@ -463,6 +493,13 @@ def post_reserve(event_id):
                 "INSERT INTO reservations (event_id, sheet_id, user_id, reserved_at) VALUES (%s, %s, %s, %s)",
                 [event['id'], sheet['id'], user['id'], datetime.utcnow().strftime("%F %T.%f")])
             reservation_id = cur.lastrowid
+
+            sql = '''
+            UPDATE sheet_reserved SET reserved = reserved + 1
+            WHERE event_id = %s AND `rank` = %s
+            '''
+            cur.execute(sql, [event_id, rank])
+
             conn.commit()
         except MySQLdb.Error as e:
             conn.rollback()
@@ -476,6 +513,7 @@ def post_reserve(event_id):
     return flask.Response(content, status=202, mimetype='application/json')
 
 
+# !
 @app.route('/api/events/<int:event_id>/sheets/<rank>/<int:num>/reservation', methods=['DELETE'])
 @login_required
 def delete_reserve(event_id, rank, num):
@@ -514,6 +552,13 @@ def delete_reserve(event_id, rank, num):
         cur.execute(
             "UPDATE reservations SET canceled_at = %s WHERE id = %s",
             [datetime.utcnow().strftime("%F %T.%f"), reservation['id']])
+        
+        sql = '''
+        UPDATE sheet_reserved SET reserved = reserved - 1
+        WHERE event_id = %s AND `rank` = %s
+        '''
+        cur.execute(sql, [event_id, rank])
+
         conn.commit()
     except MySQLdb.Error as e:
         conn.rollback()
@@ -567,6 +612,7 @@ def get_admin_events_api():
     return jsonify(get_events())
 
 
+# !
 @app.route('/admin/api/events', methods=['POST'])
 @admin_login_required
 def post_admin_events_api():
@@ -582,6 +628,11 @@ def post_admin_events_api():
             "INSERT INTO events (title, public_fg, closed_fg, price) VALUES (%s, %s, 0, %s)",
             [title, public, price])
         event_id = cur.lastrowid
+        for rank in "SABC":
+            cur.execute(
+                'INSERT INTO sheet_reserved (event_id, `rank`, reserved) VALUES (%s, %s, 0)',
+                [event_id, rank])
+
         conn.commit()
     except MySQLdb.Error as e:
         conn.rollback()
