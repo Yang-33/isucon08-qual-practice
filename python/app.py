@@ -780,6 +780,16 @@ def get_admin_sales():
         })
     return render_report_csv(reports)
 
+from wsgi_lineprof.middleware import LineProfilerMiddleware
+from wsgi_lineprof.filters import FilenameFilter, TotalTimeSorter
+
+# 標準出力に出るので、遅い関数のデバッグ的に使う
+filters = [
+    FilenameFilter("/home/y3/isucon8-qualify/webapp/python/app.py"),  # プロファイル対象のファイル名指定
+    lambda stats: filter(lambda stat: stat.total_time > 0.01, stats), # 0.01未満の結果を表示しない
+]
+app.wsgi_app = LineProfilerMiddleware(app.wsgi_app,filters=filters)
+
 
 if __name__ == "__main__":
     app.run(port=8080, debug=True, threaded=True)
