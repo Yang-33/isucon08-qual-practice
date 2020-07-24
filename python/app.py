@@ -6,6 +6,7 @@ import pathlib
 import copy
 import json
 import subprocess
+import rapidjson
 from io import StringIO
 import csv
 from datetime import datetime, timezone
@@ -44,11 +45,11 @@ def make_base_url(request):
 
 @app.template_filter('tojsonsafe')
 def tojsonsafe(target):
-    return json.dumps(target).replace("+", "\\u002b").replace("<", "\\u003c").replace(">", "\\u003e")
+    return rapidjson.dumps(target).replace("+", "\\u002b").replace("<", "\\u003c").replace(">", "\\u003e")
 
 
 def jsonify(target):
-    return json.dumps(target)
+    return rapidjson.dumps(target)
 
 
 def res_error(error="unknown", status=500):
@@ -279,6 +280,7 @@ def render_report_csv(reports):
 def get_index():
     user = get_login_user()
     events = []
+    print("pichan!!!!", app.config["JSONIFY_PRETTYPRINT_REGULAR"])
     for event in get_events(lambda e: e["public_fg"]):
         events.append(sanitize_event(event))
     return flask.render_template('index.html', user=user, events=events, base_url=make_base_url(flask.request))
@@ -424,8 +426,27 @@ def get_users(user_id):
 
     return jsonify(user)
 
+def flask_jsonify(*args, **kwargs):
+    indent = None
+    separators = (",", ":")
 
-# TODO: 重いが対処できない。過去の資料から解決策を探してみる
+    if app.config["JSONIFY_PRETTYPRINT_REGULAR"] or app.debug:
+        indent = 2
+        separators = (", ", ": ")
+        assert 0, "だめです。"
+
+    if args and kwargs:
+        raise TypeError("jsonify() behavior undefined when passed both args and kwargs")
+    elif len(args) == 1:  # single args are passed directly to dumps()
+        data = args[0]
+    else:
+        data = args or kwargs
+
+    return app.response_class(
+        f"{rapidjson.dumps(data)}\n",
+        mimetype=app.config["JSONIFY_MIMETYPE"],
+    )
+
 @app.route('/api/actions/login', methods=['POST'])
 def post_login():
     login_name = flask.request.json['login_name']
@@ -442,7 +463,7 @@ def post_login():
 
     flask.session['user_id'] = user["id"]
     user = get_login_user()
-    return flask.jsonify(user)
+    return flask_jsonify(user)
 
 
 @app.route('/api/actions/logout', methods=['POST'])
