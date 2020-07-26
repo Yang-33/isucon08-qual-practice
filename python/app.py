@@ -9,6 +9,8 @@ import subprocess
 import rapidjson
 from io import StringIO
 import csv
+import redis
+import pickle
 from datetime import datetime, timezone
 from scripts.debugvar import DEBUG
 
@@ -17,6 +19,9 @@ base_path = pathlib.Path(__file__).resolve().parent.parent
 static_folder = base_path / 'static'
 icons_folder = base_path / 'public' / 'icons'
 
+REDIS_HOST = os.environ.get('ISUBATA_REDIS_HOST', 'localhost')
+REDIS_POOL = redis.ConnectionPool(host=REDIS_HOST, port=6379, db=0)
+cache = redis.StrictRedis(connection_pool=REDIS_POOL)
 
 class CustomFlask(flask.Flask):
     jinja_options = flask.Flask.jinja_options.copy()
@@ -278,6 +283,14 @@ def render_report_csv(reports):
 
 @app.route('/')
 def get_index():
+    ob = cache.get("test")
+    if ob is not None:
+        res = pickle.loads(ob)
+        DEBUG(res)
+        cache.delete("test")
+
+    a = [1,2,"0123", 4, "go"]
+    cache.set("test", pickle.dumps(a))
     user = get_login_user()
     events = []
     print("pichan!!!!", app.config["JSONIFY_PRETTYPRINT_REGULAR"])
